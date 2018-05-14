@@ -738,22 +738,40 @@ check_bss:
 		struct ieee80211_channel *notify_channel;
 		u32 freq;
 		u16 channel = cur_network->network.Configuration.DSConfig;
+		
+		#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0))
+			struct cfg80211_roam_info roam_info = {};
+		#endif
 
 		freq = rtw_ch2freq(channel);
 		notify_channel = ieee80211_get_channel(wiphy, freq);
 		#endif
 
 		RTW_INFO(FUNC_ADPT_FMT" call cfg80211_roamed\n", FUNC_ADPT_ARG(padapter));
-		cfg80211_roamed(padapter->pnetdev
-			#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 39) || defined(COMPAT_KERNEL_RELEASE)
-			, notify_channel
-			#endif
-			, cur_network->network.MacAddress
-			, pmlmepriv->assoc_req + sizeof(struct rtw_ieee80211_hdr_3addr) + 2
-			, pmlmepriv->assoc_req_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 2
-			, pmlmepriv->assoc_rsp + sizeof(struct rtw_ieee80211_hdr_3addr) + 6
-			, pmlmepriv->assoc_rsp_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 6
-			, GFP_ATOMIC);
+		#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0))
+			roam_info.channel = notify_channel;
+			roam_info.bssid = cur_network->network.MacAddress;
+			roam_info.req_ie =
+				pmlmepriv->assoc_req+sizeof(struct rtw_ieee80211_hdr_3addr)+2;
+			roam_info.req_ie_len =
+				pmlmepriv->assoc_req_len-sizeof(struct rtw_ieee80211_hdr_3addr)-2;
+			roam_info.resp_ie =
+				pmlmepriv->assoc_rsp+sizeof(struct rtw_ieee80211_hdr_3addr)+6;
+			roam_info.resp_ie_len =
+				pmlmepriv->assoc_rsp_len-sizeof(struct rtw_ieee80211_hdr_3addr)-6;
+			cfg80211_roamed(padapter->pnetdev, &roam_info, GFP_ATOMIC);
+		#else
+			cfg80211_roamed(padapter->pnetdev
+				#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 39) || defined(COMPAT_KERNEL_RELEASE)
+				, notify_channel
+				#endif
+				, cur_network->network.MacAddress
+				, pmlmepriv->assoc_req + sizeof(struct rtw_ieee80211_hdr_3addr) + 2
+				, pmlmepriv->assoc_req_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 2
+				, pmlmepriv->assoc_rsp + sizeof(struct rtw_ieee80211_hdr_3addr) + 6
+				, pmlmepriv->assoc_rsp_len - sizeof(struct rtw_ieee80211_hdr_3addr) - 6
+				, GFP_ATOMIC);
+		#endif
 #ifdef CONFIG_RTW_80211R
 		if ((rtw_to_roam(padapter) > 0) && rtw_chk_ft_flags(padapter, RTW_FT_SUPPORTED))
 			rtw_set_ft_status(padapter, RTW_FT_ASSOCIATED_STA);
@@ -1882,6 +1900,10 @@ void rtw_cfg80211_indicate_scan_done(_adapter *adapter, bool aborted)
 {
 	struct rtw_wdev_priv *pwdev_priv = adapter_wdev_data(adapter);
 	_irqL	irqL;
+	
+	#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0))
+		struct cfg80211_scan_info info;
+	#endif // (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0))
 
 	_enter_critical_bh(&pwdev_priv->scan_req_lock, &irqL);
 	if (pwdev_priv->scan_request != NULL) {
@@ -1892,8 +1914,15 @@ void rtw_cfg80211_indicate_scan_done(_adapter *adapter, bool aborted)
 		/* avoid WARN_ON(request != wiphy_to_dev(request->wiphy)->scan_req); */
 		if (pwdev_priv->scan_request->wiphy != pwdev_priv->rtw_wdev->wiphy)
 			RTW_INFO("error wiphy compare\n");
-		else
-			cfg80211_scan_done(pwdev_priv->scan_request, aborted);
+		else {
+			#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0))
+				memset(&info, 0, sizeof(info));
+				info.aborted = aborted;
+				cfg80211_scan_done(pwdev_priv->scan_request, &info);
+			#else // (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0))
+				cfg80211_scan_done(pwdev_priv->scan_request, aborted);
+			#endif // (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0))
+		}
 
 		pwdev_priv->scan_request = NULL;
 	} else {
@@ -3794,7 +3823,19 @@ static int rtw_cfg80211_add_monitor_if(_adapter *padapter, char *name, struct ne
 	mon_ndev->type = ARPHRD_IEEE80211_RADIOTAP;
 	strncpy(mon_ndev->name, name, IFNAMSIZ);
 	mon_ndev->name[IFNAMSIZ - 1] = 0;
-	mon_ndev->destructor = rtw_ndev_destructor;
+	#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12 ,0))
+		mon_ndev->needs_free_netdev = true;
+	#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 9))
+		mon_ndev->priv_destructor = rtw_ndev_destructor;
+	#else
+		mon_ndev->destructor = rtw_ndev_destructor;
+	#endif
+	#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 9))
+		mon_ndev->needs_free_netdev = false;
+		mon_ndev->priv_destructor = rtw_ndev_destructor;
+	#else
+		mon_ndev->destructor = rtw_ndev_destructor;
+	#endif
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 29))
 	mon_ndev->netdev_ops = &rtw_cfg80211_monitor_if_ops;
